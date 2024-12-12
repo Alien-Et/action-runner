@@ -1,0 +1,68 @@
+name: Build Cloudflare Tunnel for Android
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Install Go 1.22
+        run: |
+          curl -LO https://golang.org/dl/go1.22.0.linux-amd64.tar.gz
+          sudo tar -C /usr/local -xzf go1.22.0.linux-amd64.tar.gz
+          export PATH=/usr/local/go/bin:$PATH
+          echo "export PATH=/usr/local/go/bin:$PATH" >> $GITHUB_ENV
+          go version
+
+      - name: Setup dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git gcc-aarch64-linux-gnu
+
+      - name: Clone cloudflared repository
+        run: |
+          git clone https://github.com/cloudflare/cloudflared.git $HOME/cloudflared
+
+      - name: Checkout the latest stable tag
+        run: |
+          set -e
+          cd $HOME/cloudflared
+          git fetch --tags
+          latest_tag=$(git describe --tags $(git rev-list --tags --max-count=1))
+          echo "Latest tag: $latest_tag"
+          git checkout "$latest_tag"
+
+      - name: Manage dependencies
+        run: |
+          cd $HOME/cloudflared
+          go mod tidy
+          go mod vendor
+
+      - name: Build for Android ARM64
+        run: |
+          set -e
+          cd $HOME/cloudflared/cmd/cloudflared
+          CC=aarch64-linux-gnu-gcc GOOS=android GOARCH=arm64 go build -o $HOME/cloudflared/cloudflared-android-arm64
+
+      - name: Verify build
+        run: |
+          if [ -f "$HOME/cloudflared/cloudflared-android-arm64" ]; then
+            echo "Cloudflare Tunnel 编译成功"
+          else
+            echo "Cloudflare Tunnel 编译失败"
+            exit 1
+          fi
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: cloudflared-android-arm64
+          path: $HOME/cloudflared/cloudflared-android-arm64
