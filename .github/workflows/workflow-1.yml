@@ -1,0 +1,143 @@
+name: Build PHP for Android
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+
+    env:
+      PHP_VERSION: 8.2.0
+      ANDROID_NDK_VERSION: r27
+      ANDROID_API_LEVEL: 25
+      ANDROID_ARCH: arm64
+      OUTPUT_DIR: ${{ github.workspace }}/build-output  # 构建目录无需管理员权限
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Android NDK
+      id: setup-ndk
+      run: |
+        echo "检查是否已缓存 NDK..."
+        if [ ! -d "android-ndk-${ANDROID_NDK_VERSION}" ]; then
+          echo "缓存未命中，下载 NDK..."
+          wget -q https://dl.google.com/android/repository/android-ndk-${ANDROID_NDK_VERSION}-linux.zip
+          unzip -q android-ndk-${ANDROID_NDK_VERSION}-linux.zip
+        else
+          echo "已找到 NDK 缓存。"
+        fi
+        export ANDROID_NDK_HOME=$PWD/android-ndk-${ANDROID_NDK_VERSION}
+        export PATH=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH
+
+    - name: Find and set cross-compilation tools paths
+      run: |
+        echo "查找交叉编译工具路径..."
+        
+        # 搜索 clang
+        export CLANG_PATH=$(find $ANDROID_NDK_HOME -name 'clang' -type f | head -n 1)
+        echo "clang 路径: ${CLANG_PATH}"
+
+        # 搜索 pkg-config
+        export PKG_CONFIG_PATH=$(find $ANDROID_NDK_HOME -name 'pkg-config' -type f | head -n 1)
+        echo "pkg-config 路径: ${PKG_CONFIG_PATH}"
+
+        # 搜索 sed 和 grep
+        export SED_PATH=$(which sed)
+        export GREP_PATH=$(which grep)
+
+        echo "SED 路径: ${SED_PATH}"
+        echo "GREP 路径: ${GREP_PATH}"
+
+        # 设置全局环境变量
+        echo "CLANG_PATH=${CLANG_PATH}" >> $GITHUB_ENV
+        echo "PKG_CONFIG_PATH=${PKG_CONFIG_PATH}" >> $GITHUB_ENV
+        echo "SED_PATH=${SED_PATH}" >> $GITHUB_ENV
+        echo "GREP_PATH=${GREP_PATH}" >> $GITHUB_ENV
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        REQUIRED_PACKAGES=(
+          build-essential
+          libbz2-dev
+          libcurl4-openssl-dev
+          libxml2-dev
+          libxslt1-dev
+          libssl-dev
+          libjpeg-dev
+          libpng-dev
+          libicu-dev
+          libmcrypt-dev
+          libreadline-dev
+          libsqlite3-dev
+          zlib1g-dev
+          libonig-dev
+          pkg-config
+          wget
+          unzip
+        )
+
+        echo "开始安装依赖..."
+        for pkg in "${REQUIRED_PACKAGES[@]}"; do
+          echo "安装 $pkg ..."
+          sudo apt-get install -y $pkg || echo "跳过 $pkg，未找到或安装失败。"
+        done
+        echo "依赖安装完成。"
+
+    - name: Build PHP
+      run: |
+        echo "开始配置和编译 PHP..."
+        mkdir -p ${OUTPUT_DIR}
+        wget -q https://www.php.net/distributions/php-${PHP_VERSION}.tar.gz
+        tar -zxf php-${PHP_VERSION}.tar.gz
+        cd php-${PHP_VERSION}
+
+        ./configure \
+          --host=aarch64-linux-android \
+          --prefix=${OUTPUT_DIR} \
+          --with-config-file-path=${OUTPUT_DIR}/etc \
+          --enable-fpm \
+          --with-openssl \
+          --with-zlib \
+          --enable-mbstring \
+          --enable-sockets \
+          --enable-soap \
+          --enable-intl \
+          --with-bz2 \
+          --with-curl \
+          --enable-ctype \
+          --enable-bcmath \
+          --with-xsl \
+          --enable-shmop \
+          --enable-sysvsem \
+          --disable-shared \
+          --enable-static \
+          --with-zend-vm=CALL \
+          --disable-asm  # 禁用汇编优化，绕过不支持的代码
+
+        make -j$(nproc)  # 使用多线程并行编译
+
+        echo "整理编译文件..."
+        cp sapi/cli/php ${OUTPUT_DIR}/bin/php
+        cp -r ext ${OUTPUT_DIR}/ext
+        cp -r Zend ${OUTPUT_DIR}/Zend
+        cp php.ini-development ${OUTPUT_DIR}/php.ini
+
+        echo "编译文件已整理到 ${OUTPUT_DIR}"
+
+    - name: Verify build
+      run: |
+        echo "验证交叉编译是否成功..."
+        file ${OUTPUT_DIR}/bin/php
+
+    - name: Upload PHP artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: php-build-artifacts
+        path: |
+          ${OUTPUT_DIR}
